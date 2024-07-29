@@ -1,103 +1,62 @@
 import streamlit as st
 from litellm import completion
-import os
-import json
+import os, json, difflib
 from datetime import datetime
-from dotenv import load_dotenv
-import pandas as pd
+from dotenv import load_dotenv, set_key, get_key
 from stlite_sandbox import stlite_sandbox
-import subprocess
-import sys
 
 def load_env_variables():
     load_dotenv()
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if groq_api_key:
-        st.session_state["GROQ_API_KEY"] = groq_api_key
+    if api_key := os.getenv("GROQ_API_KEY"):
+        st.session_state["GROQ_API_KEY"] = api_key
+    if 'stlite_refresh' not in st.session_state:
+        st.session_state.stlite_refresh = False
+    
+    # Load API keys from environment variables
+    for provider in ["GROQ", "OPENAI", "ANTHROPIC", "GOOGLE", "COHERE"]:
+        env_key = f"{provider}_API_KEY"
+        if api_key := os.getenv(env_key):
+            st.session_state[env_key] = api_key
 
-# Utility functions
 def load_css():
     st.markdown("""
     <style>
-    /* Existing styles ... */
 
-    /* Chat input styling */
-    .stTextInput > div > div > input {
-        background-color: #2d2d2d;
-        color: #ffffff;
-    }
-
-    /* Send button styling */
-    .stButton > button {
-        background-color: #2d2d2d;
-        color: #ffffff;
-        border: none;
-        border-radius: 5px;
-        padding: 0.5rem 1rem;
-    }
-
-    /* Adjust column widths */
-    .main .block-container {
-        max-width: 100%;
-        padding-top: 1rem;
-        padding-right: 1rem;
-        padding-left: 1rem;
-        padding-bottom: 1rem;
-    }
-
-    /* Sidebar styling */
-    .css-1d391kg {
-        background-color: #1e1e1e;
-    }
-
-    /* Chat message styling */
-    .stChatMessage {
-        background-color: #2d2d2d;
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
-
-    .stChatMessage .content p {
-        color: #ffffff;
-    }
     </style>
     """, unsafe_allow_html=True)
 
 def get_llm_response(prompt, history, selected_project):
-    system_prompt = """You are a helpful AI assistant specialized in Streamlit app development.
+    system_prompt = """You are a Streamlit app development AI assistant. Follow these rules:
+1. Enclose entire app.py content within +++ delimiters.
+2. Provide one code block per response.
+3. Focus on efficiency without unnecessary conversation.
+4. Consider the entire file when making changes.
+5. Explain changes briefly after the code block.
+6. List all required external packages at the end, prefixed with 'REQUIREMENTS:'.
 
-ADDITIONAL INSTRUCTIONS:
-
-1. When providing code changes or new code for the app.py file, always enclose the entire file content within +++ delimiters. For example:
-
+Example response:
 +++
 import streamlit as st
+import pandas as pd
 
 def main():
-    st.title("Hello, World!")
+    st.title("Data Viewer")
+    data = pd.read_csv("data.csv")
+    st.dataframe(data)
 
 if __name__ == "__main__":
     main()
 +++
+Added pandas for data handling and created a simple data viewer.
 
-2. Provide only one code block per response.
-3. Focus on completing the task efficiently without unnecessary conversation. Avoid phrases like "Certainly!" or "Is there anything else I can help you with?"
-4. When making changes to existing code, consider the entire file content and provide the full updated file within the +++ delimiters.
-5. After providing a code block, briefly explain the changes or additions you've made.
+REQUIREMENTS:
+- streamlit
+- pandas
 """
-
-    # Read the current content of app.py
-    current_file_content = ""
-    if selected_project:
-        project_path = os.path.join("projects", selected_project, "app.py")
-        if os.path.exists(project_path):
-            with open(project_path, "r") as file:
-                current_file_content = file.read()
-
-    # Add the current file content to the prompt
-    file_context = f"Here is the current content of app.py:\n\n+++\n{current_file_content}\n+++\n\nPlease make changes or additions based on the user's request."
-
+    project_path = os.path.join("projects", selected_project, "app.py")
+    current_file_content = open(project_path).read() if os.path.exists(project_path) else ""
+    file_context = f"Current app.py content:\n\n+++\n{current_file_content}\n+++\n\nMake changes based on the user's request. Or respond with typical response ignoring the code content."
+    
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": file_context},
@@ -105,28 +64,51 @@ if __name__ == "__main__":
         {"role": "user", "content": prompt}
     ]
 
-    model_formatted = (f"{st.session_state.get('LLM_PROVIDER', 'groq')}/{st.session_state.get('LLM_MODEL', 'llama-3.1-70b-versatile')}").lower()
-    response = completion(
-        model=model_formatted,
-        messages=messages,
-        stream=True,
-    )
+    # Get the current provider from the session state
+    provider = st.session_state.get('LLM_PROVIDER', 'GROQ').upper()
+    env_path = ".env"
+    env_key = f"{provider}_API_KEY"
+    
+    # Get the API key from the environment variables
+    env_api_key = get_key(env_path, env_key)
+    os.environ[env_key] = env_api_key
 
-    for chunk in response:
-        yield chunk.choices[0].delta.content or ""
+    if not env_api_key:
+        raise ValueError(f"No API key found for provider {provider}. Please check your .env file.")
+
+    model = f"{provider.lower()}/{st.session_state.get('LLM_MODEL', 'llama-3.1-70b-versatile')}".lower()
+    
+    return completion(model=model, messages=messages, stream=True, api_key=env_api_key)
 
 def save_settings(provider, api_key, model):
+    env_path = ".env"
+    if not os.path.exists(env_path):
+        open(env_path, "w").close()
+    load_dotenv(env_path)
+
+    # Update or add the API key for the given provider
+    # set_key updates the in-memory env vars and writes to the .env file
+    env_key = f"{provider.upper()}_API_KEY"
+    st.write(env_key)
+    set_key(env_path, env_key, api_key)
+    st.write(api_key)
+    # Update settings.json with non-sensitive information
     settings = {
         "LLM_PROVIDER": provider,
-        "LLM_MODEL": model,
-        f"{provider.upper()}_API_KEY": api_key
+        "LLM_MODEL": model
     }
     with open("settings.json", "w") as f:
         json.dump(settings, f)
+
+    # Update session state
     st.session_state.update(settings)
+    st.session_state[env_key] = api_key
+
+    # Reload environment variables
+    load_dotenv(env_path)
 
 def load_settings():
-    load_env_variables()
+    load_dotenv()
     if os.path.exists("settings.json"):
         with open("settings.json", "r") as f:
             settings = json.load(f)
@@ -136,34 +118,21 @@ def load_settings():
             "LLM_PROVIDER": "groq",
             "LLM_MODEL": "llama-3.1-70b-versatile"
         })
-    # Use the GROQ_API_KEY from .env if it's not in settings.json
-    if "GROQ_API_KEY" not in st.session_state:
-        st.session_state["GROQ_API_KEY"] = ""
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "edited_code" not in st.session_state:
-        st.session_state.edited_code = ""
-    if "project_create" not in st.session_state:
-        st.session_state.project_create = False
+    
+    # Load API keys from environment variables
+    provider = st.session_state.get('LLM_PROVIDER', 'GROQ').upper()
+    env_path = ".env"
+    env_key = f"{provider}_API_KEY"
+    
+    # Get the API key from the environment variables
+    env_api_key = get_key(env_path, env_key)
+    st.session_state[env_key] = env_api_key
 
-def test_llm_connection():
-    try:
-        model_formatted=(f"{st.session_state.get('LLM_PROVIDER', 'groq')}/{st.session_state.get('LLM_MODEL', 'llama-3.1-70b-versatile')}").lower()
-        completion(
-            model=model_formatted,
-            messages=[{"role": "user", "content": "Hello, are you working?"}],
-            max_tokens=10
-        )
-        return True
-    except Exception as e:
-        st.error(f"Error testing LLM connection: {e}")
-        return False
+    st.session_state.setdefault("messages", [])
 
 def create_project(name):
     project_path = os.path.join("projects", name)
     os.makedirs(project_path, exist_ok=True)
-    
-    # Create main app.py
     main_template = f"""
 import streamlit as st
 
@@ -172,10 +141,7 @@ st.set_page_config(page_title="{name}", layout="wide", initial_sidebar_state="ex
 def main():
     st.title("Welcome to {name}")
     st.write("This is a basic Streamlit app template.")
-
-    # Add a sample widget
-    user_input = st.text_input("Enter your name")
-    if user_input:
+    if user_input := st.text_input("Enter your name"):
         st.write(f"Hello, {{user_input}}!")
 
 if __name__ == "__main__":
@@ -183,20 +149,67 @@ if __name__ == "__main__":
 """
     with open(os.path.join(project_path, "app.py"), "w") as f:
         f.write(main_template)
-    
-    # Create project_notes.json
-    project_notes = {
-        "name": name,
-        "created_date": datetime.now().isoformat()
-    }
-    with open(os.path.join(project_path, "project_notes.json"), "w") as f:
-        json.dump(project_notes, f)
-
+    json.dump({"name": name, "created_date": datetime.now().isoformat()}, open(os.path.join(project_path, "project_notes.json"), "w"))
     return project_path
 
 def get_projects():
-    projects_dir = "projects"
-    return [d for d in os.listdir(projects_dir) if os.path.isdir(os.path.join(projects_dir, d))]
+    return [d for d in os.listdir("projects") if os.path.isdir(os.path.join("projects", d))]
+
+def read_requirements(project_path):
+    req_path = os.path.join(project_path, "requirements.txt")
+    return list(set(open(req_path).read().splitlines()) if os.path.exists(req_path) else [])
+
+def update_requirements(project_path, new_imports):
+    existing_reqs = set(read_requirements(project_path))
+    new_reqs = set(new_imports) - existing_reqs - {"streamlit"}
+    if new_reqs:
+        with open(os.path.join(project_path, "requirements.txt"), "a") as f:
+            for req in new_reqs:
+                f.write(f"{req}\n")
+        st.toast(f"Added new requirements: {', '.join(new_reqs)}")
+
+def extract_imports(code):
+    import ast
+    tree = ast.parse(code)
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            imports.add(node.module.split('.')[0])
+    return imports
+
+def parse_ai_response(response):
+    code_start = response.index("+++")
+    code_end = response.index("+++", code_start + 3)
+    code = response[code_start + 3:code_end].strip()
+    imports = list(extract_imports(code))
+    requirements_start = response.find("REQUIREMENTS:")
+    if requirements_start != -1:
+        imports.extend([req.strip('- ').split('==')[0] for req in response[requirements_start:].split('\n')[1:] if req.strip()])
+    return code, imports
+
+@st.fragment
+def update_code_confirmation(full_response):
+    new_code, new_imports = parse_ai_response(full_response)
+
+    if st.button("Confirm"):
+        save_code(st.session_state.selected_project, new_code)
+        # update_requirements(os.path.join("projects", st.session_state.selected_project), new_imports)
+        st.rerun()
+        
+    if st.button("Revert"):
+        st.rerun()
+        
+def save_code(project, code):
+    try:
+        with open(os.path.join("projects", project, "app.py"), "w") as f:
+            f.write(code)
+        return True
+    except Exception as e:
+        st.error(f"Error saving code: {str(e)}")
+        return False
 
 @st.fragment
 def code_editor(selected_project):
@@ -221,145 +234,126 @@ def code_editor(selected_project):
             st.warning(f"No app.py file found in the {selected_project} project.")
     else:
         st.info("Please select a project to view and edit its code.")
-        
-# Page functions
+
+def format_response(response):
+    # This function ensures that the +++ delimiters are properly placed
+    if "+++" not in response:
+        return response
+    
+    parts = response.split("+++")
+    formatted_parts = []
+    for i, part in enumerate(parts):
+        if i == 0:
+            formatted_parts.append(part.strip())
+        elif i % 2 == 1:  # Code part
+            formatted_parts.append(f"+++\n{part.strip()}\n+++")
+        else:  # Text part
+            formatted_parts.append(part.strip())
+    
+    return "\n\n".join(formatted_parts)
+
 def chat_page():
     st.title("💬 Chat")
-
     col1, col2 = st.columns([2, 3])
-
     with col1:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-        code_placeholder = st.empty()
-
+        with st.container(border=False, height=750):
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    content = message["content"]
+                    if "+++" in content:
+                        parts = content.split("+++")
+                        for i, part in enumerate(parts):
+                            if i % 2 == 0:
+                                st.markdown(part.strip())
+                            else:
+                                st.code(part.strip(), language="python")
+                    else:
+                        st.markdown(content)
+            st.markdown('</div>', unsafe_allow_html=True)
+            code_placeholder = st.empty()
     with col2:
         preview_tab, code_tab = st.tabs(["Preview", "Code"])
-
         with preview_tab:
             st.subheader("Preview")
             if st.session_state.selected_project:
-                project_path = os.path.join("projects", st.session_state.selected_project, "app.py")
-                if os.path.exists(project_path):
-                    with open(project_path, "r") as file:
-                        code_content = file.read()
-                    stlite_sandbox(code_content, height=500, editor=False)
+                project_path = os.path.join("projects", st.session_state.selected_project)
+                app_path = os.path.join(project_path, "app.py")
+                if os.path.exists(app_path):
+                    code_content = open(app_path).read()
+                    requirements = read_requirements(project_path)  # This now returns a list
+                    stlite_sandbox(code_content, height=500, editor=False, border=False, requirements=requirements, scrollable=True)
                 else:
-                    st.warning(f"No app.py file found in the {st.session_state.selected_project} project.")
+                    st.warning(f"No app.py found in {st.session_state.selected_project} project.")
             else:
                 st.info("Please select a project to preview.")
-
         with code_tab:
-            st.subheader("Code")
-            if st.session_state.selected_project:
-                project_path = os.path.join("projects", st.session_state.selected_project, "app.py")
-                if os.path.exists(project_path):
-                    with open(project_path, "r") as file:
-                        code_content = file.read()
-                    st.code(code_content, language="python")
-                else:
-                    st.warning(f"No app.py file found in the {st.session_state.selected_project} project.")
-            else:
-                st.info("Please select a project to view its code.")
-
+            code_editor(st.session_state.selected_project)
+                
     if prompt := st.chat_input("What's your question?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         full_response = ""
-        for response in get_llm_response(prompt, st.session_state.messages[:-1], st.session_state.selected_project):
-            full_response += response
         
-        # Process the response to handle code blocks
-        if "+++" in full_response:
-            code_start = full_response.index("+++")
-            code_end = full_response.index("+++", code_start + 3)
-            code_block = full_response[code_start:code_end + 3]
+        for response in get_llm_response(prompt, st.session_state.messages[:-1], st.session_state.selected_project):
+            if isinstance(response, str):
+                full_response += response
+            elif hasattr(response, 'choices') and response.choices:
+                delta = response.choices[0].delta
+                if delta and delta.content:
+                    full_response += delta.content
             
-            with code_placeholder.form("update_code_form", border=False):
-                st.code(code_block, language="python")
-                if st.form_submit_button("Confirm"):
-                    save_code(st.session_state.selected_project, code_block[3:-3])
-                
-        st.session_state.messages.append({"role": "assistant", "content": full_response.replace("+++", "")})
-
-def save_code(project, code):
-    try:
-        project_path = os.path.join("projects", project, "app.py")
-        with open(project_path, "w") as file:
-            file.write(code)
-        return True
-    except Exception as e:
-        st.error(f"An error occurred while saving the code: {str(e)}")
-        return False
-
+            # Format the response as it's being generated
+            formatted_response = format_response(full_response)
+            with code_placeholder.container(height=750, border=False):
+                with st.chat_message("assistant"):
+                    if "+++" in formatted_response:
+                        parts = formatted_response.split("+++")
+                        for i, part in enumerate(parts):
+                            if i % 2 == 0:
+                                st.markdown(part.strip())
+                            else:
+                                st.code(part.strip(), language="python")
+                    else:
+                        st.markdown(formatted_response)
+        
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        
+        if "+++" in full_response:
+            update_code_confirmation(full_response)
 
 def projects_page():
     st.title("📁 Projects")
-
-    if not os.path.exists("projects"):
-        os.makedirs("projects")
-
+    os.makedirs("projects", exist_ok=True)
     projects = get_projects()
-
     if not projects:
         st.warning("No projects found.")
-
     with st.expander("Create New Project"):
-        with st.form("create_project"):
+        with st.form("create_project", border=False):
             new_project_name = st.text_input("Project Name")
-            submit_button = st.form_submit_button("Create Project")
-            if submit_button and new_project_name:
+            if st.form_submit_button("Create Project") and new_project_name:
                 create_project(new_project_name)
                 st.toast(f"Project '{new_project_name}' created successfully!")
-
     for project in projects:
         with st.expander(project):
             project_path = os.path.join("projects", project)
             notes_path = os.path.join(project_path, "project_notes.json")
             if os.path.exists(notes_path):
-                with open(notes_path, "r") as f:
-                    notes = json.load(f)
+                notes = json.load(open(notes_path))
                 st.write(f"Created: {notes['created_date']}")
-            st.write(f"📄 app.py")
+            st.write("📄 app.py")
 
 def settings_page():
     st.title("⚙️ Settings")
-
     llm_provider = st.selectbox("LLM Provider", ["Groq", "OpenAI", "Anthropic", "Google", "Cohere"], index=0)
-    
-    if llm_provider == "Groq":
-        api_key = st.text_input("Groq API Key", type="password", value=st.session_state.get("GROQ_API_KEY", ""))
-    else:
-        api_key = st.text_input(f"{llm_provider} API Key", type="password", value=st.session_state.get(f"{llm_provider.upper()}_API_KEY", ""))
-    
+    api_key = st.text_input(f"{llm_provider} API Key", type="password", value=st.session_state.get(f"{llm_provider.upper()}_API_KEY", ""))
     model = st.text_input("Model", value=st.session_state.get("LLM_MODEL", "llama-3.1-70b-versatile"))
-
     if st.button("Save Settings"):
         save_settings(llm_provider, api_key, model)
-        st.success("Settings saved successfully!")
+        st.toast("Settings saved successfully!")
 
-        if test_llm_connection():
-            st.success("LLM connection tested successfully!")
-        else:
-            st.error("Failed to connect to LLM. Please check your settings and API key.")
-
-# Main app
 def main():
-    st.set_page_config(
-        page_title="Streamlit LLM Chat",
-        page_icon="💬",
-        layout="wide",
-        initial_sidebar_state="expanded",
-        menu_items={
-            'Get Help': 'https://www.streamlit.io/community',
-            'Report a bug': "https://github.com/yourusername/yourrepository/issues",
-            'About': "# Streamlit LLM Chat\nThis is a Streamlit app for chatting with an LLM and managing projects."
-        }
-    )
-    
+    st.set_page_config(page_title="Streamlit LLM Chat", page_icon="💬", layout="wide", initial_sidebar_state="expanded")
     load_css()
     load_settings()
-
     try:
         with st.sidebar:
             projects = get_projects()
@@ -368,14 +362,11 @@ def main():
             else:
                 st.warning("No projects found. Create a new project in the Projects page.")
                 st.session_state.selected_project = None
-
-        pages = st.navigation([
+        st.navigation([
             st.Page(chat_page, title="Chat", icon="💬"),
             st.Page(projects_page, title="Projects", icon="📁"),
             st.Page(settings_page, title="Settings", icon="⚙️")
-        ])
-        
-        pages.run()
+        ]).run()
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
         st.exception(e)
