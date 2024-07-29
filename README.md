@@ -2,6 +2,22 @@
 
 Streamlit LLM Chat is a versatile chatbot application built using the Streamlit framework. This project allows users to interact with language models from various providers, manage API keys, and configure settings for a customized conversational experience.
 
+<table>
+  <tr>
+    <td>
+      <img src="assets/Projects_1.png" alt="Video Explorer Screenshot 1" width="400"/>
+    </td>
+    <td>
+      <img src="assets/Chat_1.png" alt="Video Explorer Screenshot 2" width="400"/>
+    </td>
+  </tr>
+    <tr>
+    <td>
+      <img src="assets/Chat_2.png" alt="Video Explorer Screenshot 1" width="400"/>
+    </td>
+  </tr>
+</table>
+
 ## Connect with Me
 | Contact Info       |                      |
 |--------------------|----------------------|
