@@ -89,9 +89,7 @@ def save_settings(provider, api_key, model):
     # Update or add the API key for the given provider
     # set_key updates the in-memory env vars and writes to the .env file
     env_key = f"{provider.upper()}_API_KEY"
-    st.write(env_key)
     set_key(env_path, env_key, api_key)
-    st.write(api_key)
     # Update settings.json with non-sensitive information
     settings = {
         "LLM_PROVIDER": provider,
